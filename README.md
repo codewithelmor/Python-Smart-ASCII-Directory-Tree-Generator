@@ -31,7 +31,7 @@ The generated markdown outputs are dynamically matched and named directly after 
 
 If you scan a project named **`core-api`** containing a `.gitignore` blocking `*.log` and `build/`, it produces a file named **`core-api_directory_tree.md`**:
 
-\`\`\`text
+```text
 core-api/
 ├── .gitignore
 ├── README.md
@@ -42,7 +42,7 @@ core-api/
 └── src/
     ├── database.py
     └── utils.py
-\`\`\`
+```
 
 ## ⚙️ How Exclusions Work
 

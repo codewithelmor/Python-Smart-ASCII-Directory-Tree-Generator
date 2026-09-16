@@ -1,5 +1,6 @@
 #!/usr/bin/env encoding=utf-8
 import fnmatch
+import json
 import os
 from pathlib import Path
 
@@ -14,9 +15,9 @@ GLOBAL_IGNORED_DIRS = {
     ".pytest_cache",
     ".idea",
     ".vscode",
-    "*.user"
+    "*.user",
     "bin",
-    "obj"
+    "obj",
 }
 
 
@@ -73,6 +74,19 @@ def should_ignore(item: Path, base_path: Path, gitignore_patterns: list) -> bool
             for part in Path(relative_path_str).parts
         ):
             return True
+        # Contents-only rules (e.g. '**/[Bb]in/*' or 'bin/*') hide everything
+        # inside the folder but, unlike a bare 'bin/' rule, don't technically
+        # match the folder name itself. A folder whose entire contents are
+        # wildcarded away is still just noise in a tree view, so treat the
+        # folder as ignored too if this pattern fully empties it.
+        if pattern.endswith("/*") and not pattern.endswith("/**/*"):
+            folder_pattern = pattern[:-2]  # strip trailing '/*'
+            folder_pattern_name = folder_pattern.rsplit("/", 1)[-1]
+            if item.is_dir() and (
+                fnmatch.fnmatch(item_name, folder_pattern_name)
+                or fnmatch.fnmatch(relative_path_str, folder_pattern)
+            ):
+                return True
 
     return False
 
@@ -112,6 +126,53 @@ def generate_tree(
     return tree_lines
 
 
+def generate_tree_dict(
+    dir_path: Path, base_path: Path, gitignore_patterns: list
+) -> list:
+    """Recursively walks down directories to build a nested JSON-serializable structure."""
+    entries = []
+
+    try:
+        items = [
+            item
+            for item in dir_path.iterdir()
+            if not should_ignore(item, base_path, gitignore_patterns)
+        ]
+        items.sort(key=lambda x: (not x.is_dir(), x.name.lower()))
+    except PermissionError:
+        return [{"name": "[Permission Denied]", "type": "error"}]
+
+    for item in items:
+        if item.is_dir():
+            entries.append(
+                {
+                    "name": item.name,
+                    "type": "directory",
+                    "children": generate_tree_dict(item, base_path, gitignore_patterns),
+                }
+            )
+        else:
+            entries.append({"name": item.name, "type": "file"})
+
+    return entries
+
+
+def prompt_export_formats() -> set:
+    """Asks the user which output format(s) they want. Defaults to Markdown."""
+    print("\nWhich output format would you like?")
+    print("  1) Markdown (.md)  [default]")
+    print("  2) JSON (.json)")
+    print("  3) Both")
+    choice = input("Enter your choice (1/2/3): ").strip()
+
+    if choice == "2":
+        return {"json"}
+    elif choice == "3":
+        return {"md", "json"}
+    else:
+        return {"md"}
+
+
 def main():
     print("--- ASCII Directory Tree Generator (with .gitignore parser) ---")
     user_input = input(
@@ -128,7 +189,6 @@ def main():
         return
 
     folder_name = target_path.name or "root"
-    output_filename = f"{folder_name}_directory_tree.md"
 
     # Read and parse gitignore rules dynamically from target directory root
     gitignore_file = target_path / ".gitignore"
@@ -139,26 +199,45 @@ def main():
     else:
         print("ℹ️ No .gitignore found. Falling back to default script patterns.")
 
+    formats = prompt_export_formats()
+
     print(f"📂 Scanning: {target_path}")
     print("⏳ Building tree...")
 
-    # Initialize tree collection
-    tree_structure = [f"{folder_name}/"]
-    tree_structure.extend(generate_tree(target_path, target_path, patterns))
+    if "md" in formats:
+        output_filename = f"{folder_name}_directory_tree.md"
 
-    # Construct Markdown block
-    markdown_content = (
-        f"# Project Directory Structure: {folder_name}\n\n"
-        f"Generated from path: `{target_path}`\n\n"
-        "```text\n" + "\n".join(tree_structure) + "\n```\n"
-    )
+        tree_structure = [f"{folder_name}/"]
+        tree_structure.extend(generate_tree(target_path, target_path, patterns))
 
-    try:
-        with open(output_filename, "w", encoding="utf-8") as f:
-            f.write(markdown_content)
-        print(f"🎉 Success! Tree written to: [ {output_filename} ]")
-    except Exception as e:
-        print(f"❌ Error writing Markdown file: {e}")
+        markdown_content = (
+            f"# Project Directory Structure: {folder_name}\n\n"
+            f"Generated from path: `{target_path}`\n\n"
+            "```text\n" + "\n".join(tree_structure) + "\n```\n"
+        )
+
+        try:
+            with open(output_filename, "w", encoding="utf-8") as f:
+                f.write(markdown_content)
+            print(f"🎉 Success! Tree written to: [ {output_filename} ]")
+        except Exception as e:
+            print(f"❌ Error writing Markdown file: {e}")
+
+    if "json" in formats:
+        output_filename = f"{folder_name}_directory_tree.json"
+
+        tree_data = {
+            "root": folder_name,
+            "path": str(target_path),
+            "tree": generate_tree_dict(target_path, target_path, patterns),
+        }
+
+        try:
+            with open(output_filename, "w", encoding="utf-8") as f:
+                json.dump(tree_data, f, indent=2, ensure_ascii=False)
+            print(f"🎉 Success! Tree written to: [ {output_filename} ]")
+        except Exception as e:
+            print(f"❌ Error writing JSON file: {e}")
 
 
 if __name__ == "__main__":
